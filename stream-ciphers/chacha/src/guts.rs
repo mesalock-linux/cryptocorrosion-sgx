@@ -11,14 +11,16 @@ const BUFBLOCKS: u64 = 1 << LOG2_BUFBLOCKS;
 pub(crate) const BUFSZ64: u64 = BLOCK64 * BUFBLOCKS;
 pub(crate) const BUFSZ: usize = BUFSZ64 as usize;
 
-#[derive(Clone)]
+/// Parameters of a ChaCha stream, including fixed parameters and current position.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChaCha {
     pub(crate) b: vec128_storage,
     pub(crate) c: vec128_storage,
     pub(crate) d: vec128_storage,
 }
 
-#[derive(Clone)]
+/// Working state of a ChaCha stream.
+#[derive(Clone, PartialEq, Eq)]
 pub struct State<V> {
     pub(crate) a: V,
     pub(crate) b: V,
@@ -41,23 +43,56 @@ pub(crate) fn round<V: ArithOps + BitOps32>(mut x: State<V>) -> State<V> {
 
 #[inline(always)]
 pub(crate) fn diagonalize<V: LaneWords4>(mut x: State<V>) -> State<V> {
-    x.b = x.b.shuffle_lane_words3012();
-    x.c = x.c.shuffle_lane_words2301();
-    x.d = x.d.shuffle_lane_words1230();
+    // Since b has the critical data dependency, avoid rotating b to hide latency.
+    //
+    // The order of these statements is important for performance on pre-AVX2 Intel machines, which
+    // are throughput-bound and operating near their superscalar limits during refill_wide. The
+    // permutations here and in undiagonalize have been found in testing on Nehalem to be optimal.
+    x.a = x.a.shuffle_lane_words1230();
+    x.c = x.c.shuffle_lane_words3012();
+    x.d = x.d.shuffle_lane_words2301();
     x
 }
+
 #[inline(always)]
 pub(crate) fn undiagonalize<V: LaneWords4>(mut x: State<V>) -> State<V> {
-    x.b = x.b.shuffle_lane_words1230();
-    x.c = x.c.shuffle_lane_words2301();
-    x.d = x.d.shuffle_lane_words3012();
+    // The order of these statements is magic. See comment in diagonalize.
+    x.c = x.c.shuffle_lane_words1230();
+    x.d = x.d.shuffle_lane_words2301();
+    x.a = x.a.shuffle_lane_words3012();
     x
 }
 
 impl ChaCha {
-    #[inline(always)]
     pub fn new(key: &[u8; 32], nonce: &[u8]) -> Self {
-        init_chacha(key, nonce)
+        let ctr_nonce = [
+            0,
+            if nonce.len() == 12 {
+                read_u32le(&nonce[0..4])
+            } else {
+                0
+            },
+            read_u32le(&nonce[nonce.len() - 8..nonce.len() - 4]),
+            read_u32le(&nonce[nonce.len() - 4..]),
+        ];
+        let key0 = [
+            read_u32le(&key[0..4]),
+            read_u32le(&key[4..8]),
+            read_u32le(&key[8..12]),
+            read_u32le(&key[12..16]),
+        ];
+        let key1 = [
+            read_u32le(&key[16..20]),
+            read_u32le(&key[20..24]),
+            read_u32le(&key[24..28]),
+            read_u32le(&key[28..32]),
+        ];
+
+        ChaCha {
+            b: key0.into(),
+            c: key1.into(),
+            d: ctr_nonce.into(),
+        }
     }
 
     #[inline(always)]
@@ -120,14 +155,38 @@ impl ChaCha {
         refill_narrow_rounds(self, drounds)
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn set_stream_param(&mut self, param: u32, value: u64) {
-        set_stream_param(self, param, value)
+        let mut d: [u32; 4] = self.d.into();
+        let p0 = ((param << 1) | 1) as usize;
+        let p1 = (param << 1) as usize;
+        d[p0] = (value >> 32) as u32;
+        d[p1] = value as u32;
+        self.d = d.into();
     }
 
-    #[inline(always)]
+    #[inline]
     pub fn get_stream_param(&self, param: u32) -> u64 {
-        get_stream_param(self, param)
+        let d: [u32; 4] = self.d.into();
+        let p0 = ((param << 1) | 1) as usize;
+        let p1 = (param << 1) as usize;
+        ((d[p0] as u64) << 32) | d[p1] as u64
+    }
+
+    /// Return whether rhs represents the same stream, irrespective of current 32-bit position.
+    #[inline]
+    pub fn stream32_eq(&self, rhs: &Self) -> bool {
+        let self_d: [u32; 4] = self.d.into();
+        let rhs_d: [u32; 4] = rhs.d.into();
+        self.b == rhs.b && self.c == rhs.c && self_d[3] == rhs_d[3] && self_d[2] == rhs_d[2] && self_d[1] == rhs_d[1]
+    }
+
+    /// Return whether rhs represents the same stream, irrespective of current 64-bit position.
+    #[inline]
+    pub fn stream64_eq(&self, rhs: &Self) -> bool {
+        let self_d: [u32; 4] = self.d.into();
+        let rhs_d: [u32; 4] = rhs.d.into();
+        self.b == rhs.b && self.c == rhs.c && self_d[3] == rhs_d[3] && self_d[2] == rhs_d[2]
     }
 }
 
@@ -235,49 +294,10 @@ dispatch!(m, Mach, {
     }
 });
 
-dispatch_light128!(m, Mach, {
-    fn set_stream_param(state: &mut ChaCha, param: u32, value: u64) {
-        let d: Mach::u32x4 = m.unpack(state.d);
-        state.d = d
-            .insert((value >> 32) as u32, (param << 1) | 1)
-            .insert(value as u32, param << 1)
-            .into();
-    }
-});
-
-dispatch_light128!(m, Mach, {
-    fn get_stream_param(state: &ChaCha, param: u32) -> u64 {
-        let d: Mach::u32x4 = m.unpack(state.d);
-        ((d.extract((param << 1) | 1) as u64) << 32) | d.extract(param << 1) as u64
-    }
-});
-
 fn read_u32le(xs: &[u8]) -> u32 {
     assert_eq!(xs.len(), 4);
     u32::from(xs[0]) | (u32::from(xs[1]) << 8) | (u32::from(xs[2]) << 16) | (u32::from(xs[3]) << 24)
 }
-
-dispatch_light128!(m, Mach, {
-    fn init_chacha(key: &[u8; 32], nonce: &[u8]) -> ChaCha {
-        let ctr_nonce = [
-            0,
-            if nonce.len() == 12 {
-                read_u32le(&nonce[0..4])
-            } else {
-                0
-            },
-            read_u32le(&nonce[nonce.len() - 8..nonce.len() - 4]),
-            read_u32le(&nonce[nonce.len() - 4..]),
-        ];
-        let key0: Mach::u32x4 = m.read_le(&key[..16]);
-        let key1: Mach::u32x4 = m.read_le(&key[16..]);
-        ChaCha {
-            b: key0.into(),
-            c: key1.into(),
-            d: ctr_nonce.into(),
-        }
-    }
-});
 
 dispatch_light128!(m, Mach, {
     fn init_chacha_x(key: &[u8; 32], nonce: &[u8; 24], rounds: u32) -> ChaCha {
@@ -297,3 +317,25 @@ dispatch_light128!(m, Mach, {
         state
     }
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Basic check that streamXX_eq is block-count invariant
+    #[test]
+    fn test_stream_eq() {
+        let key = hex!("fa44478c59ca70538e3549096ce8b523232c50d9e8e8d10c203ef6c8d07098a5");
+        let nonce = hex!("8d3a0d6d7827c00701020304");
+        let mut a = ChaCha::new(&key, &nonce);
+        let b = a.clone();
+        let mut out = [0u8; BLOCK];
+        assert!(a == b);
+        assert!(a.stream32_eq(&b));
+        assert!(a.stream64_eq(&b));
+        a.refill(0, &mut out);
+        assert!(a != b);
+        assert!(a.stream32_eq(&b));
+        assert!(a.stream64_eq(&b));
+    }
+}

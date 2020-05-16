@@ -1137,13 +1137,14 @@ where
 }
 
 #[cfg(test)]
+#[cfg(target_arch = "x86_64")]
 mod test {
     use super::*;
     use crate::x86_64::{SSE2, SSE41, SSSE3};
     use crate::Machine;
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(target_feature = "ssse3"), ignore)]
     fn test_bswap32_s2_vs_s3() {
         let xs = [0x0f0e_0d0c, 0x0b0a_0908, 0x0706_0504, 0x0302_0100];
         let ys = [0x0c0d_0e0f, 0x0809_0a0b, 0x0405_0607, 0x0001_0203];
@@ -1166,7 +1167,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(target_feature = "ssse3"), ignore)]
     fn test_bswap64_s2_vs_s3() {
         let xs = [0x0f0e_0d0c_0b0a_0908, 0x0706_0504_0302_0100];
         let ys = [0x0809_0a0b_0c0d_0e0f, 0x0001_0203_0405_0607];
@@ -1189,7 +1190,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(target_feature = "ssse3"), ignore)]
     fn test_shuffle32_s2_vs_s3() {
         let xs = [0x0, 0x1, 0x2, 0x3];
         let ys = [0x2, 0x3, 0x0, 0x1];
@@ -1227,7 +1228,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(target_feature = "ssse3"), ignore)]
     fn test_shuffle64_s2_vs_s3() {
         let xs = [0x0, 0x1, 0x2, 0x3];
         let ys = [0x2, 0x3, 0x0, 0x1];
@@ -1264,8 +1265,8 @@ mod test {
         assert_eq!(x_s3, unsafe { core::mem::transmute(x_s3) });
     }
 
+    #[cfg_attr(not(all(target_feature = "ssse3", target_feature = "sse4.1")), ignore)]
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn test_lanes_u32x4() {
         let xs = [0x1, 0x2, 0x3, 0x4];
 
@@ -1296,7 +1297,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(all(target_feature = "ssse3", target_feature = "sse4.1")), ignore)]
     fn test_lanes_u64x2() {
         let xs = [0x1, 0x2];
 
@@ -1327,7 +1328,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn test_vec4_u32x4_s2() {
         let xs = [1, 2, 3, 4];
         let s2 = unsafe { SSE2::instance() };
@@ -1343,7 +1343,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(all(target_feature = "ssse3", target_feature = "sse4.1")), ignore)]
     fn test_vec4_u32x4_s4() {
         let xs = [1, 2, 3, 4];
         let s4 = unsafe { SSE41::instance() };
@@ -1359,7 +1359,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn test_vec2_u64x2_s2() {
         let xs = [0x1, 0x2];
         let s2 = unsafe { SSE2::instance() };
@@ -1371,7 +1370,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(not(all(target_feature = "ssse3", target_feature = "sse4.1")), ignore)]
     fn test_vec4_u64x2_s4() {
         let xs = [0x1, 0x2];
         let s4 = unsafe { SSE41::instance() };

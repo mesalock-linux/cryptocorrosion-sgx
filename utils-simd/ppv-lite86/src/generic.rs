@@ -16,7 +16,20 @@ impl From<[u32; 4]> for vec128_storage {
         Self { d }
     }
 }
-#[derive(Clone, Copy)]
+impl From<vec128_storage> for [u32; 4] {
+    #[inline]
+    fn from(d: vec128_storage) -> Self {
+        unsafe { d.d }
+    }
+}
+impl Eq for vec128_storage {}
+impl PartialEq<vec128_storage> for vec128_storage {
+    #[inline]
+    fn eq(&self, rhs: &Self) -> bool {
+        unsafe { self.o == rhs.o }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct vec256_storage {
     v128: [vec128_storage; 2],
 }
@@ -30,7 +43,7 @@ impl vec256_storage {
         self.v128
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct vec512_storage {
     v128: [vec128_storage; 4],
 }
